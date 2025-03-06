@@ -1,0 +1,92 @@
+/* Base styles */
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  -webkit-tap-highlight-color: transparent;
+}
+
+code {
+  font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
+    monospace;
+}
+
+/* Accessibility improvements */
+:focus {
+  outline: 2px solid #4a6fa5;
+  outline-offset: 2px;
+}
+
+/* High contrast mode */
+@media (forced-colors: active) {
+  button {
+    border: 2px solid transparent;
+  }
+}
+
+/* Remove blue highlight on mobile */
+* {
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Improved button accessibility */
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+}
+
+/* Improved form element accessibility */
+input, 
+button, 
+textarea, 
+select {
+  font: inherit;
+}
+
+/* Screen reader only class */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border-width: 0;
+}
+
+/* Prevent text selection during double-tap on mobile */
+.no-select {
+  user-select: none;
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+}
+
+/* Improve touch targets for mobile */
+@media (max-width: 768px) {
+  button, 
+  input[type="button"], 
+  input[type="submit"],
+  input[type="reset"] {
+    min-height: 44px;
+    min-width: 44px;
+  }
+  
+  input[type="text"],
+  input[type="email"],
+  input[type="password"],
+  input[type="search"],
+  input[type="tel"],
+  input[type="url"],
+  input[type="number"] {
+    min-height: 44px;
+  }
+}
