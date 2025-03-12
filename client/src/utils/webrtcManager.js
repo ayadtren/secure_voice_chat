@@ -1,743 +1,890 @@
-// eslint-disable-next-line no-unused-vars
-import { createEnhancedAudioStream } from './audioProcessor';
-import { SpeakingDetector } from './speakingDetector';
-import { AudioQualityMonitor } from './qualityMonitor';
-import { createMicrophoneStatus } from './browserDetection';
+import { WebRTCQualityMonitor } from './webrtcQualityMonitor';
+import { getOptimalVideoConstraints, isMobileDevice } from './responsiveHelper';
 
 /**
- * WebRTC Manager for handling peer connections
+ * WebRTC Manager class
+ * Handles WebRTC connections and media streams
  */
 export class WebRTCManager {
-  /**
-   * Create a new WebRTC manager
-   * @param {Socket} socket - Socket.IO socket
-   * @param {Object} options - Configuration options
-   */
   constructor(socket, options = {}) {
-    // Store socket
     this.socket = socket;
-    this.userId = options.userId;
-    
-    // Configuration
-    this.config = {
-      iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:stun1.l.google.com:19302' },
-        { urls: 'stun:stun2.l.google.com:19302' },
-      ],
-      iceCandidatePoolSize: 10,
-    };
-    
-    // Enhanced audio settings
-    this.audioConstraints = {
-      echoCancellation: true,
-      noiseSuppression: true,
-      autoGainControl: true,
-      sampleRate: 48000,
-      channelCount: 1
-    };
-    
-    // State
+    this.userId = options.userId || `user-${Math.floor(Math.random() * 10000)}`;
     this.roomId = null;
-    this.localStream = null;
     this.peerConnections = new Map();
-    this.speakingDetector = null;
     this.audioQualityMonitors = new Map();
-    this.microphoneInitialized = false;
-    this.microphonePermissionRequested = false;
-    this.permissionDenied = false; // Track if permission has been denied
+    this.localStream = null;
+    this.localVideoStream = null;
+    this.localScreenStream = null; // For screen sharing
+    this.isScreenSharing = false; // Screen sharing status
+    this.speakingDetector = null;
+    this.iceServers = options.iceServers || [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' },
+      { urls: 'stun:stun2.l.google.com:19302' },
+    ];
+    this.onRemoteStreamAdded = options.onRemoteStreamAdded;
+    this.onRemoteStreamRemoved = options.onRemoteStreamRemoved;
+    this.onPeerConnected = options.onPeerConnected;
+    this.onPeerDisconnected = options.onPeerDisconnected;
+    this.onAudioLevelChange = options.onAudioLevelChange;
+    this.onVideoStatusChange = options.onVideoStatusChange;
+    this.onScreenSharingChange = options.onScreenSharingChange;
+    this.onNetworkQualityChange = options.onNetworkQualityChange;
     
-    // Callbacks
-    this.onPeerConnect = options.onPeerConnect || null;
-    this.onPeerDisconnect = options.onPeerDisconnect || null;
-    this.onSpeakingChange = options.onSpeakingChange || null;
-    this.onAudioQualityChange = options.onAudioQualityChange || null;
-    this.onError = options.onError || null;
-    this.onMicrophoneStatus = options.onMicrophoneStatus || null;
+    // Initialize WebRTC quality monitor
+    this.qualityMonitor = new WebRTCQualityMonitor({
+      onQualityChange: this._handleQualityChange.bind(this),
+      adaptiveMode: options.adaptiveMode || true
+    });
     
-    // Bind methods
-    this._handleUserMediaError = this._handleUserMediaError.bind(this);
-    this._notifyError = this._notifyError.bind(this);
+    // Current video quality preset
+    this.currentQuality = 'medium';
+    
+    // Setup socket event listeners
+    this._setupSocketListeners();
   }
-  
+
   /**
-   * Notify about errors in a consistent way
-   * @param {string|Error} error - Error message or object
-   * @param {string} defaultMessage - Default message if error is empty
-   * @private
-   */
-  _notifyError(error, defaultMessage = 'An unknown error occurred') {
-    let errorMessage = defaultMessage;
-    
-    if (error) {
-      if (typeof error === 'string') {
-        errorMessage = error;
-      } else if (error instanceof Error) {
-        errorMessage = error.message || error.toString();
-      } else if (error.name || error.message) {
-        errorMessage = error.message || error.name;
-      }
-    }
-    
-    console.error(defaultMessage, error || {});
-    
-    if (this.onError) {
-      this.onError(errorMessage);
-    }
-    
-    return errorMessage;
-  }
-  
-  /**
-   * Handle user media errors
-   * @param {Error} error - The error that occurred
-   * @private
-   */
-  _handleUserMediaError(error) {
-    let errorMessage = 'Failed to access microphone. Please check your permissions.';
-    
-    // Check if error exists and has properties
-    if (error) {
-      if (error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError') {
-        errorMessage = 'Microphone access denied. Please allow microphone access in your browser settings.';
-        
-        // Show instructions for enabling microphone
-        if (this.onMicrophoneStatus) {
-          this.onMicrophoneStatus(createMicrophoneStatus('denied', error.message));
-        }
-        this.permissionDenied = true; // Mark permission as denied to prevent repeated attempts
-      } else if (error.name === 'NotFoundError' || error.name === 'DevicesNotFoundError') {
-        errorMessage = 'No microphone found. Please connect a microphone and try again.';
-      } else if (error.name === 'NotReadableError' || error.name === 'TrackStartError') {
-        errorMessage = 'Could not start microphone. It may be in use by another application.';
-      } else if (error.name === 'OverconstrainedError') {
-        errorMessage = 'Microphone constraints cannot be satisfied. Please try with different settings.';
-      } else if (error.name === 'TypeError') {
-        errorMessage = 'Invalid audio constraints. Please check your browser compatibility.';
-      } else if (error.name === 'AbortError') {
-        errorMessage = 'Microphone access request was aborted. Please try again.';
-      } else if (error.name === 'SecurityError') {
-        errorMessage = 'Microphone access blocked due to security policy. Try using HTTPS.';
-      }
-    }
-    
-    this._notifyError(error, errorMessage);
-    return errorMessage;
-  }
-  
-  /**
-   * Initialize WebRTC with local audio stream
-   * @param {string} roomId - ID of the room to join
-   * @returns {Promise<boolean>} Success status
+   * Initialize WebRTC and join room
+   * @param {string} roomId - Room ID to join
+   * @returns {Promise<void>}
    */
   async initialize(roomId) {
+    this.roomId = roomId;
+    
     try {
-      // If permission was previously denied, don't try again automatically
-      if (this.permissionDenied) {
-        this.onMicrophoneStatus(createMicrophoneStatus('denied'));
-        return false;
-      }
-      
-      // Store room ID
-      this.roomId = roomId;
-      this.microphonePermissionRequested = true;
-      
-      if (this.onMicrophoneStatus) {
-        this.onMicrophoneStatus(createMicrophoneStatus('requesting'));
-      }
-      
-      // Try with simpler constraints first
-      const constraints = {
+      // Get user media
+      const stream = await navigator.mediaDevices.getUserMedia({
         audio: true,
         video: false
-      };
+      });
       
-      try {
-        // Get user media with basic audio settings first
-        this.localStream = await navigator.mediaDevices.getUserMedia(constraints);
-        this.microphoneInitialized = true;
+      this.localStream = stream;
+      
+      // Join room
+      this.socket.emit('join-room', {
+        roomId: this.roomId,
+        userId: this.userId
+      });
+      
+      // Setup audio level detection
+      this._setupAudioLevelDetection(stream);
+      
+      return Promise.resolve();
+    } catch (error) {
+      console.error('Error initializing WebRTC:', error);
+      return Promise.reject(error);
+    }
+  }
+  
+  /**
+   * Enable video
+   * @param {MediaTrackConstraints} constraints - Video constraints
+   * @returns {Promise<MediaStream>}
+   */
+  async enableVideo(constraints = { width: 640, height: 480 }) {
+    try {
+      // Get video stream
+      const videoStream = await navigator.mediaDevices.getUserMedia({
+        video: constraints
+      });
+      
+      this.localVideoStream = videoStream;
+      
+      // Add video tracks to all peer connections
+      for (const [peerId, peerConnection] of this.peerConnections.entries()) {
+        const videoTrack = videoStream.getVideoTracks()[0];
         
-        if (this.onMicrophoneStatus) {
-          this.onMicrophoneStatus(createMicrophoneStatus('granted'));
+        if (videoTrack) {
+          peerConnection.addTrack(videoTrack, videoStream);
+          
+          // Renegotiate the connection
+          await this._createAndSendOffer(peerId);
         }
+      }
+      
+      // Notify about video status change
+      if (this.onVideoStatusChange) {
+        this.onVideoStatusChange(true, videoStream);
+      }
+      
+      return videoStream;
+    } catch (error) {
+      console.error('Error enabling video:', error);
+      throw error;
+    }
+  }
+  
+  /**
+   * Disable video
+   */
+  disableVideo() {
+    if (!this.localVideoStream) {
+      return;
+    }
+    
+    // Stop all video tracks
+    this.localVideoStream.getVideoTracks().forEach(track => {
+      track.stop();
+    });
+    
+    // Remove video tracks from all peer connections
+    for (const [peerId, peerConnection] of this.peerConnections.entries()) {
+      const senders = peerConnection.getSenders();
+      const videoSender = senders.find(sender => 
+        sender.track && sender.track.kind === 'video'
+      );
+      
+      if (videoSender) {
+        peerConnection.removeTrack(videoSender);
         
-        // If basic constraints work, try to apply enhanced settings
+        // Renegotiate the connection
+        this._createAndSendOffer(peerId).catch(console.error);
+      }
+    }
+    
+    // Reset local video stream
+    this.localVideoStream = null;
+    
+    // Notify about video status change
+    if (this.onVideoStatusChange) {
+      this.onVideoStatusChange(false, null);
+    }
+  }
+  
+  /**
+   * Set video quality
+   * @param {string} preset - Quality preset (low, medium, high, hd, auto)
+   * @returns {Promise<void>}
+   */
+  async setVideoQuality(preset) {
+    // Use responsive helper to get optimal constraints based on device and quality
+    const optimalConstraints = getOptimalVideoConstraints(preset);
+    
+    // For backward compatibility, keep the switch but use optimal constraints
+    let constraints = optimalConstraints;
+    
+    switch (preset) {
+      case 'low':
+        constraints = { ...optimalConstraints, width: { ideal: optimalConstraints.width }, height: { ideal: optimalConstraints.height }, frameRate: { ideal: optimalConstraints.frameRate } };
+        break;
+      case 'medium':
+        constraints = { ...optimalConstraints, width: { ideal: optimalConstraints.width }, height: { ideal: optimalConstraints.height }, frameRate: { ideal: optimalConstraints.frameRate } };
+        break;
+      case 'high':
+        constraints = { ...optimalConstraints, width: { ideal: optimalConstraints.width }, height: { ideal: optimalConstraints.height }, frameRate: { ideal: optimalConstraints.frameRate } };
+        break;
+      case 'hd':
+        constraints = { ...optimalConstraints, width: { ideal: optimalConstraints.width }, height: { ideal: optimalConstraints.height }, frameRate: { ideal: optimalConstraints.frameRate } };
+        break;
+      case 'auto':
+      default:
+        // Use adaptive quality based on network conditions
+        this.qualityMonitor.setAdaptiveMode(true);
+        constraints = { width: 1280, height: 720, frameRate: 30 };
+        break;
+    }
+    
+    // Store current quality
+    this.currentQuality = preset;
+    
+    // Disable adaptive mode if not auto
+    if (preset !== 'auto') {
+      this.qualityMonitor.setAdaptiveMode(false);
+    }
+    
+    // If video is already enabled, update constraints
+    if (this.localVideoStream) {
+      // Get current video track
+      const videoTrack = this.localVideoStream.getVideoTracks()[0];
+      
+      if (videoTrack) {
+        // Apply new constraints
         try {
-          const enhancedStream = await navigator.mediaDevices.getUserMedia({
-            audio: this.audioConstraints,
-            video: false
-          });
+          await videoTrack.applyConstraints(constraints);
           
-          // Replace the basic stream with enhanced stream
-          this.localStream.getTracks().forEach(track => track.stop());
-          this.localStream = enhancedStream;
-        } catch (enhancedError) {
-          console.warn('Could not apply enhanced audio settings, using basic audio:', enhancedError);
-          // Continue with basic audio, no need to throw
-        }
-      } catch (basicError) {
-        // If basic constraints fail, throw the error to be caught by outer try/catch
-        throw basicError;
-      }
-      
-      // Create speaking detector
-      if (this.localStream) {
-        this.speakingDetector = new SpeakingDetector(this.localStream, {
-          onSpeakingChange: (speaking) => {
-            if (this.onSpeakingChange) {
-              this.onSpeakingChange(speaking);
-            }
-            
-            // Emit speaking status to other users
-            if (this.socket && this.socket.connected) {
-              this.socket.emit('speaking', {
-                roomId: this.roomId,
-                speaking
-              });
-            }
+          // Notify about quality change
+          if (this.onNetworkQualityChange) {
+            this.onNetworkQualityChange(100, { preset });
           }
-        });
-        this.speakingDetector.start();
-      } else {
-        throw new Error('Failed to initialize local stream');
+        } catch (error) {
+          console.error('Error applying video constraints:', error);
+          
+          // Fallback: restart video with new constraints
+          this.disableVideo();
+          await this.enableVideo(constraints);
+        }
       }
-      
-      console.log('WebRTC initialized successfully with roomId:', roomId);
-      return true;
-    } catch (error) {
-      this.microphoneInitialized = false;
-      const errorMessage = this._handleUserMediaError(error);
-      throw new Error(errorMessage);
     }
   }
   
   /**
-   * Retry microphone access
-   * @returns {Promise<boolean>} Success status
+   * Get available video devices
+   * @returns {Promise<MediaDeviceInfo[]>}
    */
-  async retryMicrophoneAccess() {
+  async getVideoDevices() {
     try {
-      // Reset permission denied flag to allow retry
-      this.permissionDenied = false;
-      
-      // Notify about microphone status
-      this.onMicrophoneStatus(createMicrophoneStatus('requesting'));
-      
-      // Get user media with audio
-      this.localStream = await navigator.mediaDevices.getUserMedia({
-        audio: this.audioConstraints,
-        video: false
-      });
-      
-      // Microphone access granted
-      this.onMicrophoneStatus(createMicrophoneStatus('granted'));
-      
-      // Initialize speaking detector
-      if (this.speakingDetector) {
-        this.speakingDetector.stop();
-      }
-      
-      this.speakingDetector = new SpeakingDetector(this.localStream, {
-        onSpeakingChange: (speaking) => {
-          this.onSpeakingChange(speaking);
-          
-          // Emit speaking status to other users
-          if (this.socket && this.socket.connected) {
-            this.socket.emit('speaking', {
-              roomId: this.roomId,
-              speaking
-            });
-          }
-        }
-      });
-      
-      this.speakingDetector.start();
-      
-      // Rejoin room if needed
-      if (this.roomId && this.socket && this.socket.connected) {
-        this.socket.emit('join', { roomId: this.roomId });
-      }
-      
-      return true;
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      return devices.filter(device => device.kind === 'videoinput');
     } catch (error) {
-      // Handle specific getUserMedia errors
-      if (error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError') {
-        this.permissionDenied = true; // Mark permission as denied
-        this.onMicrophoneStatus(createMicrophoneStatus('denied', error.message));
-        this.onError('Microphone access denied. Please allow microphone access in your browser settings.');
-      } else if (error.name === 'NotFoundError' || error.name === 'DevicesNotFoundError') {
-        this.onMicrophoneStatus(createMicrophoneStatus('unavailable', error.message));
-        this.onError('No microphone found. Please connect a microphone and try again.');
-      } else if (error.name === 'NotReadableError' || error.name === 'TrackStartError') {
-        this.onMicrophoneStatus(createMicrophoneStatus('unavailable', error.message));
-        this.onError('Could not access microphone. It may be in use by another application.');
-      } else {
-        this.onMicrophoneStatus(createMicrophoneStatus('error', error.message));
-        this.onError(`Microphone error: ${error.message || 'Unknown error'}`);
-      }
-      
-      console.error('Error accessing microphone:', error);
-      return false;
+      console.error('Error getting video devices:', error);
+      return [];
     }
   }
   
   /**
-   * Create a new peer connection for a user
-   * @param {string} peerId - ID of the peer to connect to
-   * @param {boolean} isInitiator - Whether this peer is initiating the connection
-   * @returns {RTCPeerConnection} The created peer connection
+   * Change video device
+   * @param {string} deviceId - Device ID
+   * @returns {Promise<MediaStream>}
    */
-  _createPeerConnection(peerId, isInitiator = false) {
+  async changeVideoDevice(deviceId) {
     try {
-      console.log(`Creating peer connection for ${peerId}, isInitiator: ${isInitiator}`);
+      // Get current constraints
+      let constraints = { deviceId: { exact: deviceId } };
       
-      // Create new peer connection
-      const peerConnection = new RTCPeerConnection(this.config);
-      
-      // Add local stream tracks to peer connection
-      if (this.localStream) {
-        this.localStream.getTracks().forEach(track => {
-          console.log(`Adding track to peer connection: ${track.kind}`);
-          peerConnection.addTrack(track, this.localStream);
-        });
-      } else {
-        console.error('No local stream available when creating peer connection');
-        if (this.onError) {
-          this.onError('Microphone not initialized. Please refresh and try again.');
-        }
+      // Add quality constraints if available
+      if (this.currentQuality) {
+        const qualityConstraints = getOptimalVideoConstraints(this.currentQuality);
+        constraints = {
+          ...constraints,
+          width: { ideal: qualityConstraints.width },
+          height: { ideal: qualityConstraints.height },
+          frameRate: { ideal: qualityConstraints.frameRate }
+        };
       }
       
-      // Handle ICE candidates
-      peerConnection.onicecandidate = (event) => {
-        if (event.candidate) {
-          console.log('Sending ICE candidate to peer:', peerId);
-          this.socket.emit('iceCandidate', {
-            to: peerId,
-            from: this.userId,
-            candidate: event.candidate,
-          });
-        }
-      };
+      // Disable current video
+      this.disableVideo();
       
-      // Handle connection state changes
-      peerConnection.onconnectionstatechange = () => {
-        console.log(`Connection state changed to: ${peerConnection.connectionState} for peer ${peerId}`);
-        switch (peerConnection.connectionState) {
-          case 'connected':
-            console.log(`Connected to peer: ${peerId}`);
-            break;
-          case 'disconnected':
-          case 'failed':
-          case 'closed':
-            console.log(`Disconnected from peer: ${peerId}`);
-            if (this.onPeerDisconnect) {
-              this.onPeerDisconnect(peerId);
-            }
-            this._cleanupPeerConnection(peerId);
-            break;
-          default:
-            break;
-        }
-      };
+      // Enable video with new device
+      return await this.enableVideo(constraints);
+    } catch (error) {
+      console.error('Error changing video device:', error);
+      throw error;
+    }
+  }
+  
+  /**
+   * Leave room
+   */
+  leaveRoom() {
+    // Emit leave room event
+    this.socket.emit('leave-room', {
+      roomId: this.roomId,
+      userId: this.userId
+    });
+    
+    // Reset room ID
+    this.roomId = null;
+    
+    // Disconnect from all peers
+    this.disconnect();
+  }
+  
+  /**
+   * Disconnect from all peers
+   */
+  disconnect() {
+    // Stop all local streams
+    if (this.localStream) {
+      this.localStream.getTracks().forEach(track => track.stop());
+      this.localStream = null;
+    }
+    
+    if (this.localVideoStream) {
+      this.localVideoStream.getTracks().forEach(track => track.stop());
+      this.localVideoStream = null;
+    }
+    
+    if (this.localScreenStream) {
+      this.localScreenStream.getTracks().forEach(track => track.stop());
+      this.localScreenStream = null;
+      this.isScreenSharing = false;
+    }
+    
+    // Close all peer connections
+    for (const [peerId, peerConnection] of this.peerConnections.entries()) {
+      if (peerConnection) {
+        peerConnection.close();
+      }
+    }
+    
+    this.peerConnections.clear();
+    this.audioQualityMonitors.clear();
+    
+    // Remove socket listeners
+    this.socket.off('user-connected');
+    this.socket.off('user-disconnected');
+    this.socket.off('receive-signal');
+  }
+  
+  /**
+   * Handle quality change from WebRTCQualityMonitor
+   * @param {number} quality - Quality score (0-100)
+   * @param {Object} metrics - Quality metrics
+   * @private
+   */
+  _handleQualityChange(quality, metrics) {
+    // Notify about quality change
+    if (this.onNetworkQualityChange) {
+      this.onNetworkQualityChange(quality, metrics);
+    }
+    
+    // If in adaptive mode, adjust video quality
+    if (this.qualityMonitor.isAdaptiveMode() && this.localVideoStream) {
+      const videoTrack = this.localVideoStream.getVideoTracks()[0];
       
-      // Handle incoming tracks
-      peerConnection.ontrack = (event) => {
-        console.log(`Received track from peer ${peerId}: ${event.track.kind}`);
-        const stream = event.streams[0];
+      if (videoTrack) {
+        // Get target constraints based on quality
+        const constraints = this.qualityMonitor.getTargetConstraints(quality);
         
-        // Store remote stream and create audio element
-        if (stream) {
-          console.log(`Received stream from peer ${peerId}`);
-          
-          // Create audio quality monitor
-          const qualityMonitor = new AudioQualityMonitor(peerConnection, {
-            onQualityChange: (quality, metrics) => {
-              if (this.onAudioQualityChange) {
-                this.onAudioQualityChange(peerId, quality, metrics);
-              }
-            }
-          });
-          qualityMonitor.start();
-          this.audioQualityMonitors.set(peerId, qualityMonitor);
-          
-          // Notify about the new stream
-          if (this.onPeerConnect) {
-            this.onPeerConnect(peerId, stream);
-          }
+        if (constraints) {
+          // Apply constraints
+          videoTrack.applyConstraints(constraints).catch(console.error);
         }
-      };
+      }
+    }
+  }
+  
+  /**
+   * Setup socket event listeners
+   * @private
+   */
+  _setupSocketListeners() {
+    // Handle user connected event
+    this.socket.on('user-connected', async ({ userId }) => {
+      console.log('User connected:', userId);
+      
+      // Create peer connection
+      await this._createPeerConnection(userId);
+      
+      // Notify about peer connected
+      if (this.onPeerConnected) {
+        this.onPeerConnected(userId);
+      }
+    });
+    
+    // Handle user disconnected event
+    this.socket.on('user-disconnected', ({ userId }) => {
+      console.log('User disconnected:', userId);
+      
+      // Close peer connection
+      this._closePeerConnection(userId);
+      
+      // Notify about peer disconnected
+      if (this.onPeerDisconnected) {
+        this.onPeerDisconnected(userId);
+      }
+    });
+    
+    // Handle receive signal event
+    this.socket.on('receive-signal', async ({ userId, signal }) => {
+      try {
+        // Create peer connection if not exists
+        if (!this.peerConnections.has(userId)) {
+          await this._createPeerConnection(userId);
+        }
+        
+        const peerConnection = this.peerConnections.get(userId);
+        
+        // Handle signal
+        if (signal.type === 'offer') {
+          await peerConnection.setRemoteDescription(new RTCSessionDescription(signal));
+          const answer = await peerConnection.createAnswer();
+          await peerConnection.setLocalDescription(answer);
+          
+          // Send answer
+          this.socket.emit('send-signal', {
+            roomId: this.roomId,
+            userId: this.userId,
+            targetUserId: userId,
+            signal: answer
+          });
+        } else if (signal.type === 'answer') {
+          await peerConnection.setRemoteDescription(new RTCSessionDescription(signal));
+        } else if (signal.candidate) {
+          await peerConnection.addIceCandidate(new RTCIceCandidate(signal));
+        }
+      } catch (error) {
+        console.error('Error handling signal:', error);
+      }
+    });
+  }
+  
+  /**
+   * Create peer connection
+   * @param {string} peerId - Peer ID
+   * @returns {Promise<RTCPeerConnection>}
+   * @private
+   */
+  async _createPeerConnection(peerId) {
+    try {
+      // Create peer connection
+      const peerConnection = new RTCPeerConnection({
+        iceServers: this.iceServers
+      });
       
       // Store peer connection
       this.peerConnections.set(peerId, peerConnection);
       
-      // If initiator, create and send offer
-      if (isInitiator) {
-        console.log(`Initiating offer creation for peer ${peerId}`);
-        this._createAndSendOffer(peerId);
+      // Add local stream tracks
+      if (this.localStream) {
+        this.localStream.getTracks().forEach(track => {
+          peerConnection.addTrack(track, this.localStream);
+        });
       }
       
-      return peerConnection;
-    } catch (error) {
-      console.error('Error creating peer connection:', error);
-      if (this.onError) {
-        this.onError('Failed to create connection. Please try again.');
-      }
-      return null;
-    }
-  }
-  
-  /**
-   * Create and send an offer to a peer
-   * @param {string} peerId - ID of the peer to send offer to
-   * @returns {Promise<void>}
-   */
-  async _createAndSendOffer(peerId) {
-    try {
-      console.log(`Creating offer for peer ${peerId}`);
-      const peerConnection = this.peerConnections.get(peerId);
-      if (!peerConnection) {
-        console.error(`No peer connection found for ${peerId}`);
-        return;
+      // Add local video stream tracks
+      if (this.localVideoStream) {
+        this.localVideoStream.getTracks().forEach(track => {
+          peerConnection.addTrack(track, this.localVideoStream);
+        });
       }
       
-      // Create offer with audio preferences
-      const offer = await peerConnection.createOffer({
-        offerToReceiveAudio: true,
-        offerToReceiveVideo: false,
-      });
-      
-      // Set local description
-      await peerConnection.setLocalDescription(offer);
-      console.log(`Local description set for peer ${peerId}`);
-      
-      // Send offer to peer
-      this.socket.emit('offer', {
-        to: peerId,
-        from: this.userId,
-        offer: peerConnection.localDescription,
-      });
-      console.log(`Offer sent to peer ${peerId}`);
-    } catch (error) {
-      console.error('Error creating offer:', error);
-      if (this.onError) {
-        this.onError('Failed to create connection offer. Please try again.');
-      }
-    }
-  }
-  
-  /**
-   * Handle incoming offer from a peer
-   * @param {string} peerId - ID of the peer who sent the offer
-   * @param {RTCSessionDescription} offer - The offer from the peer
-   * @returns {Promise<void>}
-   */
-  async _handleOffer(peerId, offer) {
-    try {
-      console.log(`Handling offer from peer ${peerId}`);
-      
-      // Get or create peer connection
-      let peerConnection = this.peerConnections.get(peerId);
-      if (!peerConnection) {
-        console.log(`Creating new peer connection for ${peerId} to handle offer`);
-        peerConnection = this._createPeerConnection(peerId);
+      // Add local screen stream tracks (if screen sharing is active)
+      if (this.isScreenSharing && this.localScreenStream) {
+        const screenTrack = this.localScreenStream.getVideoTracks()[0];
+        
+        if (screenTrack) {
+          // Find existing video sender
+          const senders = peerConnection.getSenders();
+          const videoSender = senders.find(sender => 
+            sender.track && sender.track.kind === 'video'
+          );
+          
+          if (videoSender) {
+            // Replace existing video track with screen track
+            await videoSender.replaceTrack(screenTrack);
+          } else {
+            // Add screen track if no video sender exists
+            peerConnection.addTrack(screenTrack, this.localScreenStream);
+          }
+        }
       }
       
-      if (!peerConnection) {
-        console.error(`Failed to create peer connection for ${peerId}`);
-        return;
-      }
+      // Handle ICE candidate event
+      peerConnection.onicecandidate = (event) => {
+        if (event.candidate) {
+          // Send ICE candidate
+          this.socket.emit('send-signal', {
+            roomId: this.roomId,
+            userId: this.userId,
+            targetUserId: peerId,
+            signal: event.candidate
+          });
+        }
+      };
       
-      // Set remote description
-      await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
-      console.log(`Remote description set for peer ${peerId}`);
+      // Handle track event
+      peerConnection.ontrack = (event) => {
+        // Create remote stream if not exists
+        const remoteStream = new MediaStream();
+        
+        // Add track to remote stream
+        remoteStream.addTrack(event.track);
+        
+        // Notify about remote stream added
+        if (this.onRemoteStreamAdded) {
+          this.onRemoteStreamAdded(peerId, remoteStream);
+        }
+        
+        // Setup audio level detection for remote stream
+        if (event.track.kind === 'audio') {
+          this._setupRemoteAudioLevelDetection(peerId, remoteStream);
+        }
+        
+        // Setup quality monitoring
+        this.qualityMonitor.monitorConnection(peerConnection);
+      };
       
-      // Create answer
-      const answer = await peerConnection.createAnswer();
-      console.log(`Answer created for peer ${peerId}`);
-      
-      // Set local description
-      await peerConnection.setLocalDescription(answer);
-      console.log(`Local description set for peer ${peerId}`);
-      
-      // Send answer to peer
-      this.socket.emit('answer', {
-        to: peerId,
-        from: this.userId,
-        answer: peerConnection.localDescription,
-      });
-      console.log(`Answer sent to peer ${peerId}`);
-    } catch (error) {
-      console.error('Error handling offer:', error);
-      if (this.onError) {
-        this.onError('Failed to process incoming connection. Please try again.');
-      }
-    }
-  }
-  
-  /**
-   * Handle incoming answer from a peer
-   * @param {string} peerId - ID of the peer who sent the answer
-   * @param {RTCSessionDescription} answer - The answer from the peer
-   * @returns {Promise<void>}
-   */
-  async _handleAnswer(peerId, answer) {
-    try {
-      console.log(`Handling answer from peer ${peerId}`);
-      const peerConnection = this.peerConnections.get(peerId);
-      if (peerConnection) {
-        await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
-        console.log(`Remote description set for peer ${peerId} from answer`);
-      } else {
-        console.error(`No peer connection found for ${peerId} when handling answer`);
-      }
-    } catch (error) {
-      console.error('Error handling answer:', error);
-      if (this.onError) {
-        this.onError('Failed to establish connection. Please try again.');
-      }
-    }
-  }
-  
-  /**
-   * Handle incoming ICE candidate from a peer
-   * @param {string} peerId - ID of the peer who sent the ICE candidate
-   * @param {RTCIceCandidate} candidate - The ICE candidate
-   * @returns {Promise<void>}
-   */
-  async _handleIceCandidate(peerId, candidate) {
-    try {
-      console.log(`Handling ICE candidate from peer ${peerId}`);
-      const peerConnection = this.peerConnections.get(peerId);
-      if (peerConnection) {
-        await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
-        console.log(`Successfully added ICE candidate for peer ${peerId}`);
-      } else {
-        console.warn(`Received ICE candidate for non-existent peer connection: ${peerId}`);
-      }
-    } catch (error) {
-      console.error('Error handling ICE candidate:', error);
-      if (this.onError) {
-        this.onError('Failed to establish connection. Please try again.');
-      }
-    }
-  }
-  
-  /**
-   * Clean up a peer connection
-   * @param {string} peerId - ID of the peer
-   */
-  _cleanupPeerConnection(peerId) {
-    try {
-      console.log(`Cleaning up peer connection for ${peerId}`);
-      const peerConnection = this.peerConnections.get(peerId);
-      if (peerConnection) {
-        peerConnection.onicecandidate = null;
-        peerConnection.ontrack = null;
-        peerConnection.onconnectionstatechange = null;
-        peerConnection.close();
-        this.peerConnections.delete(peerId);
-      }
-      
-      // Clean up audio quality monitor
-      const qualityMonitor = this.audioQualityMonitors.get(peerId);
-      if (qualityMonitor) {
-        qualityMonitor.stop();
-        this.audioQualityMonitors.delete(peerId);
-      }
-      
-      console.log(`Peer connection for ${peerId} cleaned up`);
-    } catch (error) {
-      console.error(`Error cleaning up peer connection for ${peerId}:`, error);
-    }
-  }
-  
-  /**
-   * Accept an incoming call
-   * @param {string} peerId - ID of the peer who initiated the call
-   * @param {RTCSessionDescription} offer - The offer from the peer
-   * @returns {Promise<boolean>} Success status
-   */
-  async acceptIncomingCall(peerId, offer) {
-    try {
-      console.log(`Accepting incoming call from ${peerId}`);
-      await this._handleOffer(peerId, offer);
-      return true;
-    } catch (error) {
-      console.error('Error accepting call:', error);
-      if (this.onError) {
-        this.onError('Failed to accept call. Please try again.');
-      }
-      throw error;
-    }
-  }
-
-  /**
-   * Start a call with a specific peer
-   * @param {string} peerId - ID of the peer to call
-   * @returns {Promise<RTCPeerConnection>} The peer connection
-   */
-  async startCall(peerId) {
-    try {
-      if (!this.microphonePermissionRequested) {
-        await this.initialize(this.roomId || 'default');
-      }
-      
-      if (!this.localStream || !this.microphoneInitialized) {
-        throw new Error('Microphone not initialized. Please refresh and try again.');
-      }
-      
-      // Create peer connection
-      const peerConnection = this._createPeerConnection(peerId, true);
-      
-      // Add local tracks to the connection
-      this.localStream.getTracks().forEach(track => {
-        peerConnection.addTrack(track, this.localStream);
-      });
+      // Handle connection state change event
+      peerConnection.onconnectionstatechange = () => {
+        if (peerConnection.connectionState === 'disconnected' || 
+            peerConnection.connectionState === 'failed' ||
+            peerConnection.connectionState === 'closed') {
+          // Notify about remote stream removed
+          if (this.onRemoteStreamRemoved) {
+            this.onRemoteStreamRemoved(peerId);
+          }
+          
+          // Remove audio level detection
+          if (this.audioQualityMonitors.has(peerId)) {
+            this.audioQualityMonitors.delete(peerId);
+          }
+        }
+      };
       
       // Create and send offer
       await this._createAndSendOffer(peerId);
       
       return peerConnection;
     } catch (error) {
-      this._notifyError(error, 'Failed to start call');
+      console.error('Error creating peer connection:', error);
       throw error;
     }
   }
-
+  
   /**
-   * Handle an answer from a peer
-   * @param {string} peerId - ID of the peer who sent the answer
-   * @param {RTCSessionDescription} answer - The answer from the peer
+   * Create and send offer
+   * @param {string} peerId - Peer ID
    * @returns {Promise<void>}
+   * @private
    */
-  async handleAnswer(peerId, answer) {
-    console.log(`Handling answer from ${peerId} in public method`);
-    return this._handleAnswer(peerId, answer);
-  }
-
-  /**
-   * Add an ICE candidate from a peer
-   * @param {string} peerId - ID of the peer who sent the ICE candidate
-   * @param {RTCIceCandidate} candidate - The ICE candidate
-   * @returns {Promise<void>}
-   */
-  async addIceCandidate(peerId, candidate) {
-    console.log(`Adding ICE candidate from ${peerId} in public method`);
-    return this._handleIceCandidate(peerId, candidate);
-  }
-  
-  /**
-   * Bind socket event handlers
-   */
-  _bindSocketEvents() {
-    // We don't need to bind socket events here since we're handling them in App.js
-    // This method is kept for future enhancements
-  }
-  
-  /**
-   * Check if microphone is muted
-   * @returns {boolean} Mute status
-   */
-  isMuted() {
-    if (!this.localStream) return true;
-    
-    const audioTracks = this.localStream.getAudioTracks();
-    if (audioTracks.length === 0) return true;
-    
-    return !audioTracks[0].enabled;
-  }
-  
-  /**
-   * Toggle microphone mute state
-   * @returns {boolean} New mute status
-   */
-  toggleMute() {
-    if (!this.localStream) return true;
-    
-    const audioTracks = this.localStream.getAudioTracks();
-    if (audioTracks.length === 0) return true;
-    
-    const track = audioTracks[0];
-    track.enabled = !track.enabled;
-    
-    return !track.enabled;
-  }
-  
-  /**
-   * Get current audio level (0-100)
-   * @returns {number} Audio level
-   */
-  getAudioLevel() {
-    if (this.speakingDetector) {
-      return this.speakingDetector.getAudioLevel();
+  async _createAndSendOffer(peerId) {
+    try {
+      const peerConnection = this.peerConnections.get(peerId);
+      
+      if (!peerConnection) {
+        throw new Error(`Peer connection not found for ${peerId}`);
+      }
+      
+      // Create offer
+      const offer = await peerConnection.createOffer();
+      
+      // Set local description
+      await peerConnection.setLocalDescription(offer);
+      
+      // Send offer
+      this.socket.emit('send-signal', {
+        roomId: this.roomId,
+        userId: this.userId,
+        targetUserId: peerId,
+        signal: offer
+      });
+    } catch (error) {
+      console.error('Error creating and sending offer:', error);
+      throw error;
     }
-    return 0;
   }
   
   /**
-   * Get connection quality for a peer
-   * @param {string} peerId - ID of the peer
-   * @returns {Promise<Object>} Quality metrics
+   * Close peer connection
+   * @param {string} peerId - Peer ID
+   * @private
    */
-  async getConnectionQuality(peerId) {
-    const qualityMonitor = this.audioQualityMonitors.get(peerId);
-    if (qualityMonitor) {
-      return await qualityMonitor.getQualityMetrics();
+  _closePeerConnection(peerId) {
+    // Get peer connection
+    const peerConnection = this.peerConnections.get(peerId);
+    
+    if (peerConnection) {
+      // Close peer connection
+      peerConnection.close();
+      
+      // Remove peer connection
+      this.peerConnections.delete(peerId);
+      
+      // Remove audio level detection
+      if (this.audioQualityMonitors.has(peerId)) {
+        this.audioQualityMonitors.delete(peerId);
+      }
+      
+      // Notify about remote stream removed
+      if (this.onRemoteStreamRemoved) {
+        this.onRemoteStreamRemoved(peerId);
+      }
     }
-    return { quality: 'unknown', metrics: {} };
   }
   
   /**
-   * Leave the room and clean up all connections
+   * Setup audio level detection
+   * @param {MediaStream} stream - Media stream
+   * @private
    */
-  leaveRoom() {
-    // Stop all peer connections
-    for (const peerId of this.peerConnections.keys()) {
-      this._cleanupPeerConnection(peerId);
+  _setupAudioLevelDetection(stream) {
+    try {
+      // Create audio context
+      const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      
+      // Create analyser
+      const analyser = audioContext.createAnalyser();
+      analyser.fftSize = 512;
+      analyser.smoothingTimeConstant = 0.1;
+      
+      // Create source
+      const source = audioContext.createMediaStreamSource(stream);
+      source.connect(analyser);
+      
+      // Create data array
+      const dataArray = new Uint8Array(analyser.frequencyBinCount);
+      
+      // Create speaking detector
+      this.speakingDetector = {
+        analyser,
+        dataArray,
+        threshold: 30,
+        speakingHistory: Array(5).fill(false),
+        isSpeaking: false
+      };
+      
+      // Start detection loop
+      this._detectAudioLevel();
+    } catch (error) {
+      console.error('Error setting up audio level detection:', error);
+    }
+  }
+  
+  /**
+   * Setup remote audio level detection
+   * @param {string} peerId - Peer ID
+   * @param {MediaStream} stream - Media stream
+   * @private
+   */
+  _setupRemoteAudioLevelDetection(peerId, stream) {
+    try {
+      // Create audio context
+      const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      
+      // Create analyser
+      const analyser = audioContext.createAnalyser();
+      analyser.fftSize = 512;
+      analyser.smoothingTimeConstant = 0.1;
+      
+      // Create source
+      const source = audioContext.createMediaStreamSource(stream);
+      source.connect(analyser);
+      
+      // Create data array
+      const dataArray = new Uint8Array(analyser.frequencyBinCount);
+      
+      // Create speaking detector
+      const speakingDetector = {
+        analyser,
+        dataArray,
+        threshold: 30,
+        speakingHistory: Array(5).fill(false),
+        isSpeaking: false
+      };
+      
+      // Store speaking detector
+      this.audioQualityMonitors.set(peerId, speakingDetector);
+      
+      // Start detection loop
+      this._detectRemoteAudioLevel(peerId);
+    } catch (error) {
+      console.error('Error setting up remote audio level detection:', error);
+    }
+  }
+  
+  /**
+   * Detect audio level
+   * @private
+   */
+  _detectAudioLevel() {
+    if (!this.speakingDetector) {
+      return;
     }
     
-    // Stop local stream
-    if (this.localStream) {
-      this.localStream.getTracks().forEach(track => track.stop());
-      this.localStream = null;
-    }
+    // Get speaking detector
+    const { analyser, dataArray, threshold, speakingHistory } = this.speakingDetector;
     
-    // Stop speaking detector
-    if (this.speakingDetector) {
-      try {
-        this.speakingDetector.stop();
-      } catch (error) {
-        console.error('Error stopping speaking detector:', error);
+    // Get audio level
+    analyser.getByteFrequencyData(dataArray);
+    
+    // Calculate average level
+    let sum = 0;
+    for (let i = 0; i < dataArray.length; i++) {
+      sum += dataArray[i];
+    }
+    const average = sum / dataArray.length;
+    
+    // Check if speaking
+    const isSpeakingNow = average > threshold;
+    
+    // Update speaking history
+    speakingHistory.shift();
+    speakingHistory.push(isSpeakingNow);
+    
+    // Check if speaking status changed
+    const isSpeakingMajority = speakingHistory.filter(Boolean).length > speakingHistory.length / 2;
+    
+    if (isSpeakingMajority !== this.speakingDetector.isSpeaking) {
+      // Update speaking status
+      this.speakingDetector.isSpeaking = isSpeakingMajority;
+      
+      // Notify about audio level change
+      if (this.onAudioLevelChange) {
+        this.onAudioLevelChange(this.userId, isSpeakingMajority, average);
       }
     }
     
-    // Reset state
-    this.roomId = null;
-    this.peerConnections.clear();
-    this.audioQualityMonitors.clear();
-    this.speakingDetector = null;
-    this.microphoneInitialized = false;
-    this.microphonePermissionRequested = false;
-    this.permissionDenied = false;
+    // Continue detection loop
+    requestAnimationFrame(() => this._detectAudioLevel());
   }
   
   /**
-   * Dispose of all resources
+   * Detect remote audio level
+   * @param {string} peerId - Peer ID
+   * @private
    */
-  dispose() {
-    console.log('Disposing WebRTC manager');
-    this.leaveRoom();
+  _detectRemoteAudioLevel(peerId) {
+    // Get speaking detector
+    const speakingDetector = this.audioQualityMonitors.get(peerId);
     
-    // Unbind socket events
-    if (this.socket) {
-      this.socket.off('userJoined');
-      this.socket.off('userLeft');
-      this.socket.off('offer');
-      this.socket.off('answer');
-      this.socket.off('iceCandidate');
-      this.socket.off('speaking');
+    if (!speakingDetector) {
+      return;
     }
     
-    console.log('WebRTC manager disposed');
+    // Get audio level
+    const { analyser, dataArray, threshold, speakingHistory } = speakingDetector;
+    analyser.getByteFrequencyData(dataArray);
+    
+    // Calculate average level
+    let sum = 0;
+    for (let i = 0; i < dataArray.length; i++) {
+      sum += dataArray[i];
+    }
+    const average = sum / dataArray.length;
+    
+    // Check if speaking
+    const isSpeakingNow = average > threshold;
+    
+    // Update speaking history
+    speakingHistory.shift();
+    speakingHistory.push(isSpeakingNow);
+    
+    // Check if speaking status changed
+    const isSpeakingMajority = speakingHistory.filter(Boolean).length > speakingHistory.length / 2;
+    
+    if (isSpeakingMajority !== speakingDetector.isSpeaking) {
+      // Update speaking status
+      speakingDetector.isSpeaking = isSpeakingMajority;
+      
+      // Notify about audio level change
+      if (this.onAudioLevelChange) {
+        this.onAudioLevelChange(peerId, isSpeakingMajority, average);
+      }
+    }
+    
+    // Continue detection loop
+    requestAnimationFrame(() => this._detectRemoteAudioLevel(peerId));
+  }
+
+  /**
+   * Start screen sharing
+   * @returns {Promise<boolean>} Success status
+   */
+  async startScreenSharing() {
+    try {
+      if (this.isScreenSharing) {
+        return true;
+      }
+      
+      // Get screen sharing stream
+      const screenStream = await navigator.mediaDevices.getDisplayMedia({
+        video: {
+          cursor: 'always',
+          displaySurface: 'monitor',
+          logicalSurface: true,
+          frameRate: 30
+        },
+        audio: false
+      });
+      
+      // Store screen stream
+      this.localScreenStream = screenStream;
+      this.isScreenSharing = true;
+      
+      // Add screen track to all peer connections
+      for (const [peerId, peerConnection] of this.peerConnections.entries()) {
+        const screenTrack = screenStream.getVideoTracks()[0];
+        
+        // Find existing video sender
+        const senders = peerConnection.getSenders();
+        const videoSender = senders.find(sender => 
+          sender.track && sender.track.kind === 'video'
+        );
+        
+        if (videoSender) {
+          // Replace existing video track with screen track
+          await videoSender.replaceTrack(screenTrack);
+        } else {
+          // Add screen track if no video sender exists
+          peerConnection.addTrack(screenTrack, screenStream);
+          
+          // Renegotiate the connection
+          await this._createAndSendOffer(peerId);
+        }
+      }
+      
+      // Handle screen sharing stop event
+      screenStream.getVideoTracks()[0].addEventListener('ended', () => {
+        this.stopScreenSharing();
+      });
+      
+      // Notify about screen sharing
+      if (this.onScreenSharingChange) {
+        this.onScreenSharingChange(true, screenStream);
+      }
+      
+      return true;
+    } catch (error) {
+      console.error('Error starting screen sharing:', error);
+      return false;
+    }
+  }
+  
+  /**
+   * Stop screen sharing
+   * @returns {Promise<boolean>} Success status
+   */
+  async stopScreenSharing() {
+    try {
+      if (!this.isScreenSharing || !this.localScreenStream) {
+        return false;
+      }
+      
+      // Stop all screen tracks
+      this.localScreenStream.getTracks().forEach(track => track.stop());
+      
+      // Reset screen sharing state
+      this.localScreenStream = null;
+      this.isScreenSharing = false;
+      
+      // Restore video tracks in all peer connections
+      if (this.localVideoStream) {
+        const videoTrack = this.localVideoStream.getVideoTracks()[0];
+        
+        for (const [peerId, peerConnection] of this.peerConnections.entries()) {
+          const senders = peerConnection.getSenders();
+          const videoSender = senders.find(sender => 
+            sender.track && sender.track.kind === 'video'
+          );
+          
+          if (videoSender && videoTrack) {
+            await videoSender.replaceTrack(videoTrack);
+          }
+        }
+      }
+      
+      // Notify about screen sharing stop
+      if (this.onScreenSharingChange) {
+        this.onScreenSharingChange(false, null);
+      }
+      
+      return true;
+    } catch (error) {
+      console.error('Error stopping screen sharing:', error);
+      return false;
+    }
+  }
+  
+  /**
+   * Toggle screen sharing
+   * @returns {Promise<boolean>} New screen sharing status
+   */
+  async toggleScreenSharing() {
+    if (this.isScreenSharing) {
+      return await this.stopScreenSharing();
+    } else {
+      return await this.startScreenSharing();
+    }
+  }
+  
+  /**
+   * Check if screen sharing is enabled
+   * @returns {boolean} Screen sharing status
+   */
+  isScreenSharingEnabled() {
+    return this.isScreenSharing;
   }
 }

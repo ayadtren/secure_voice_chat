@@ -9,11 +9,12 @@ import { WebRTCManager } from './utils/webrtcManager';
 import QRCodeGenerator from './components/QRCodeGenerator';
 import QRCodeScanner from './components/QRCodeScanner';
 import MicrophonePermissionGuide from './components/MicrophonePermissionGuide';
+import VideoChat from './VideoChat';
 import { Button } from './components/ui/button';
 
 // Configuration - prioritize runtime config over environment variables
-const SERVER_URL = window.APP_CONFIG?.SERVER_URL || process.env.REACT_APP_SERVER_URL;
-const WS_URL = window.APP_CONFIG?.WS_URL || process.env.REACT_APP_WS_URL;
+const SERVER_URL = 'http://localhost:3001';
+const WS_URL = 'ws://localhost:3001';
 
 console.log('Using server URL:', SERVER_URL);
 console.log('Using WebSocket URL:', WS_URL);
@@ -38,6 +39,7 @@ function App() {
   const [webrtcManager, setWebrtcManager] = useState(null);
   const [microphoneStatus, setMicrophoneStatus] = useState(null);
   const [errorMessage, setErrorMessage] = useState(null);
+  const [showVideoChat, setShowVideoChat] = useState(false);
   
   // Refs
   const localStream = useRef(null);
@@ -389,6 +391,15 @@ function App() {
     setDarkMode(!darkMode);
   };
   
+  // Toggle video chat mode
+  const toggleVideoChat = () => {
+    // End any ongoing call before switching to video chat
+    if (callStatus !== 'idle') {
+      endCall();
+    }
+    setShowVideoChat(!showVideoChat);
+  };
+  
   // Handle QR code scan result
   const handleQRScan = (data) => {
     try {
@@ -441,7 +452,7 @@ function App() {
   return (
     <div className={`app ${darkMode ? 'dark-mode' : 'light-mode'}`}>
       <header className="app-header">
-        <h1>Secure Voice Chat</h1>
+        <h1>Secure {showVideoChat ? 'Video' : 'Voice'} Chat</h1>
         <button 
           className="theme-toggle" 
           onClick={toggleDarkMode} 
@@ -461,6 +472,11 @@ function App() {
         
         {!username ? (
           <Login onLogin={handleLogin} connected={connected} />
+        ) : showVideoChat ? (
+          <VideoChat 
+            username={username} 
+            onBack={() => setShowVideoChat(false)} 
+          />
         ) : (
           <div className="chat-container">
             <div className="sidebar">
@@ -501,6 +517,14 @@ function App() {
                 >
                   {showQRScanner ? 'Hide Scanner' : 'Scan QR Code'}
                 </Button>
+                
+                <Button
+                  onClick={toggleVideoChat}
+                  variant="default"
+                  className="mt-2"
+                >
+                  Switch to Video Chat
+                </Button>
               </div>
             </div>
             
@@ -514,7 +538,7 @@ function App() {
                 {callStatus === 'idle' ? (
                   <div className="idle-container">
                     <h2>Not in a call</h2>
-                    <p>Select a user from the list to start a call</p>
+                    <p>Select a user from the list to start a call or join a video room</p>
                     
                     {showQRCode && (
                       <div className="qr-container">
@@ -562,6 +586,17 @@ function App() {
                         onHangup={endCall}
                         quality={networkQuality}
                       />
+                      
+                      <Button
+                        onClick={() => {
+                          endCall();
+                          toggleVideoChat();
+                        }}
+                        variant="default"
+                        className="ml-2"
+                      >
+                        Switch to Video
+                      </Button>
                     </div>
                   </div>
                 )}
@@ -576,7 +611,7 @@ function App() {
       </main>
       
       <footer className="app-footer">
-        <p>Secure Voice Chat &copy; 2025 - End-to-End Encrypted | Zero Persistence | Privacy First</p>
+        <p>Secure {showVideoChat ? 'Video' : 'Voice'} Chat &copy; 2025 - End-to-End Encrypted | Zero Persistence | Privacy First</p>
       </footer>
     </div>
   );

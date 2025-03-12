@@ -1,0 +1,286 @@
+# Engineering Specification: Adding Video Chat to Secure Voice Chat Application
+
+## 1. Project Overview
+
+### 1.1 Background
+The current application is a secure voice chat platform built using WebRTC for peer-to-peer communication with Socket.IO for signaling. The application allows users to connect and communicate via audio in real-time. The goal is to enhance this application by adding video chat capabilities while maintaining the existing voice chat functionality.
+
+### 1.2 Objectives
+- Add high-quality, secure video chat functionality to the existing voice chat application
+- Maintain the current user experience for voice-only communication
+- Ensure the application remains performant across various devices and network conditions
+- Implement appropriate privacy and security measures for video communication
+
+## 2. Technical Requirements
+
+### 2.1 WebRTC Enhancements
+
+#### 2.1.1 WebRTCManager Updates
+- Modify the `WebRTCManager` class to handle video streams alongside audio streams
+- Update the `getUserMedia` call to request both audio and video tracks
+- Add configuration options for video constraints (resolution, frame rate, etc.)
+- Implement methods for enabling/disabling video independently of audio
+- Add support for camera selection if multiple cameras are available
+
+```javascript
+// Example modifications to WebRTCManager
+class WebRTCManager {
+  constructor(socket, options = {}) {
+    // Existing audio configuration
+    this.audioConstraints = { /* existing audio constraints */ };
+    
+    // New video configuration
+    this.videoConstraints = {
+      width: { ideal: 1280, max: 1920 },
+      height: { ideal: 720, max: 1080 },
+      frameRate: { ideal: 30, max: 60 }
+    };
+    
+    // New state variables
+    this.videoEnabled = options.videoEnabled || false;
+    this.localVideoStream = null;
+    
+    // New callbacks
+    this.onLocalVideo = options.onLocalVideo || null;
+    this.onRemoteVideo = options.onRemoteVideo || null;
+    this.onVideoStatusChange = options.onVideoStatusChange || null;
+  }
+  
+  // New method to initialize with video
+  async initializeWithVideo(roomId) {
+    // Implementation details
+  }
+  
+  // New method to toggle video
+  async toggleVideo(enabled) {
+    // Implementation details
+  }
+  
+  // New method to switch camera
+  async switchCamera(deviceId) {
+    // Implementation details
+  }
+}
+```
+
+#### 2.1.2 Media Stream Handling
+- Implement separate handling for audio and video tracks
+- Add support for muting/unmuting video independently of audio
+- Implement camera switching functionality for devices with multiple cameras
+- Add video quality monitoring and adaptation based on network conditions
+
+### 2.2 User Interface Components
+
+#### 2.2.1 Video Display Elements
+- Create video containers for displaying local and remote video streams
+- Implement responsive layout that adapts to different screen sizes
+- Add picture-in-picture functionality for local video preview
+- Design UI that gracefully handles video-enabled and video-disabled states
+
+#### 2.2.2 Video Controls
+- Add camera toggle button (enable/disable)
+- Add camera selection dropdown for devices with multiple cameras
+- Implement video quality selection (low, medium, high)
+- Add fullscreen toggle for video display
+
+#### 2.2.3 UI Indicators
+- Add visual indicator when camera is active
+- Display connection quality for video stream
+- Show loading/connecting states during video initialization
+- Implement visual feedback for camera permission status
+
+### 2.3 Server-Side Updates
+
+#### 2.3.1 Signaling Enhancements
+- Update Socket.IO event handlers to support video-specific signaling
+- Add support for video track negotiation
+- Implement bandwidth estimation and adaptation signaling
+- Add server-side logging for video-related events
+
+#### 2.3.2 Security Enhancements
+- Update CORS and CSP policies to accommodate video streams
+- Implement additional rate limiting for video-related signaling
+- Add server-side validation for video-related messages
+
+## 3. Performance Considerations
+
+### 3.1 Bandwidth Management
+- Implement adaptive bitrate streaming based on network conditions
+- Add user controls for selecting video quality presets
+- Implement bandwidth estimation and reporting
+- Add fallback mechanisms for poor network conditions (reduce resolution, frame rate, or disable video)
+
+### 3.2 Resource Optimization
+- Optimize video rendering to minimize CPU usage
+- Implement efficient handling of video tracks to reduce memory consumption
+- Add support for hardware acceleration where available
+- Implement background processing for video effects (if implemented)
+
+## 4. Security and Privacy
+
+### 4.1 Permission Handling
+- Implement proper camera permission requesting and handling
+- Add clear visual indicators when camera is active
+- Provide easy access to camera controls for quickly disabling video
+- Handle permission denial gracefully with appropriate user feedback
+
+### 4.2 Data Protection
+- Ensure all video streams are encrypted in transit
+- Consider implementing end-to-end encryption for video streams
+- Add options for background blur or virtual backgrounds to enhance privacy
+- Implement secure handling of video frames and ensure no data is stored
+
+### 4.3 Compliance
+- Ensure compliance with relevant privacy regulations (GDPR, CCPA, etc.)
+- Add appropriate privacy notices for camera usage
+- Implement user consent mechanisms for video features
+- Document data handling practices for transparency
+
+## 5. Implementation Plan
+
+### 5.1 Phase 1: Core Video Functionality
+- Update WebRTCManager to handle video streams ✓
+  - Added video constraints and configuration options
+  - Implemented methods for enabling/disabling video
+  - Added support for camera selection
+  - Modified peer connection handling to include video tracks
+  
+- Implement basic UI for video display ✓
+  - Created VideoContainer component for displaying video streams
+  - Added user information overlay on video streams
+  - Implemented responsive layout for video display
+  - Added placeholder for disabled video state
+  
+- Add camera toggle functionality ✓
+  - Created VideoControls component with camera toggle button
+  - Implemented camera on/off functionality
+  - Added visual indicators for camera status
+  - Created CameraPermissionGuide component for permission handling
+  
+- Test basic video chat between two users ⟳
+  - Created VideoChatRoom component integrating all video functionality
+  - Created VideoChat entry point for joining/creating video rooms
+  - Updated App.js to support switching between voice and video chat
+  - **Next Steps:**
+    - Complete end-to-end testing of video chat between users
+    - Fix any bugs in the video stream handling
+    - Optimize initial connection establishment
+    - Verify proper cleanup of video resources
+
+### 5.2 Phase 2: Enhanced Features
+- Implement camera selection for multiple devices
+- Add video quality controls
+- Implement adaptive streaming based on network conditions
+- Add visual indicators for connection quality and camera status
+
+### 5.3 Phase 3: Optimization and Polish
+- Optimize performance across different devices
+- Implement background blur or virtual backgrounds (optional)
+- Add fullscreen and picture-in-picture modes
+- Enhance UI/UX based on user feedback
+
+### 5.4 Phase 4: Testing and Deployment
+- Conduct comprehensive testing across devices and browsers
+- Test under various network conditions
+- Perform security audit
+- Deploy to production
+
+## 6. Testing Strategy
+
+### 6.1 Unit Testing
+- Test individual components (WebRTCManager, UI components)
+- Verify proper handling of media streams
+- Test permission handling and error scenarios
+
+### 6.2 Integration Testing
+- Test interaction between client and server components
+- Verify signaling for video tracks
+- Test compatibility across browsers
+
+### 6.3 Performance Testing
+- Test under various network conditions (bandwidth, latency, packet loss)
+- Verify adaptive streaming behavior
+- Measure resource usage (CPU, memory, battery)
+
+### 6.4 User Acceptance Testing
+- Gather feedback on video quality and user experience
+- Test with real users in various environments
+- Validate accessibility of video controls
+
+## 7. Backward Compatibility
+
+### 7.1 Voice-Only Mode
+- Ensure users without cameras can still participate
+- Implement graceful fallback to voice-only mode
+- Maintain compatibility with existing voice chat functionality
+
+### 7.2 Browser Support
+- Support major browsers (Chrome, Firefox, Safari, Edge)
+- Implement feature detection for WebRTC video capabilities
+- Provide appropriate fallback for unsupported browsers
+
+## 8. Documentation
+
+### 8.1 User Documentation
+- Update user guides to include video chat functionality
+- Document camera permissions and privacy considerations
+- Provide troubleshooting guides for common video issues
+
+### 8.2 Developer Documentation
+- Document WebRTCManager API changes
+- Update architecture diagrams to include video components
+- Document testing procedures for video functionality
+
+## 9. Future Considerations
+
+### 9.1 Multi-Party Video
+- Consider future support for more than two participants in video chat
+- Research SFU/MCU architectures for scaling video conferencing
+- Plan for UI adaptations for multiple video streams
+
+### 9.2 Advanced Features
+- Screen sharing functionality
+- Recording capabilities (with appropriate privacy controls)
+- Advanced video effects and filters
+- Mobile-specific optimizations
+
+## 10. Conclusion
+
+This engineering specification outlines a comprehensive approach to adding video chat functionality to the existing secure voice chat application. By following a phased implementation approach and focusing on performance, security, and user experience, we can successfully enhance the application with high-quality video capabilities while maintaining the existing voice chat functionality.
+
+The implementation will leverage the existing WebRTC infrastructure while extending it to handle video streams, with careful consideration given to performance optimization, security, and privacy concerns. The result will be a secure, reliable, and user-friendly video and voice chat application.
+
+## 11. Implementation Progress
+
+### 11.1 Completed Components
+- VideoContainer: Displays video streams with user information overlay
+- VideoControls: Provides camera toggle and device selection functionality
+- CameraPermissionGuide: Handles camera permission requests and guidance
+- VideoChatRoom: Main component integrating video chat functionality
+- VideoChat: Entry point for video chat with room creation/joining
+- VideoQualityControls: Provides options to change video quality settings
+- NetworkQualityIndicator: Displays visual representation of network quality
+- ScreenShareButton: Provides UI for toggling screen sharing functionality
+- RecordButton: Provides UI for toggling video recording functionality
+
+### 11.2 Current Status
+- Phase 1 implementation is complete
+- Phase 2 implementation is complete
+- Phase 3 implementation is complete
+- Core components for video display and control have been created
+- Advanced features like screen sharing and recording are implemented
+- Mobile optimization and proper resource cleanup are in place
+
+### 11.3 Next Steps
+1. Conduct comprehensive testing across different devices and browsers
+2. Optimize performance for low-bandwidth scenarios
+3. Enhance error handling and recovery mechanisms
+4. Consider implementing additional features like virtual backgrounds or noise suppression
+
+### 11.4 Known Issues
+- ✓ Proper cleanup of video resources when leaving a room (Addressed in Phase 3)
+- ✓ Camera permission handling across browsers (Addressed with CameraPermissionGuide)
+- ✓ Video quality adaptation based on network conditions (Addressed in Phase 2)
+- ✓ Mobile device optimization (Addressed in Phase 3)
+- Screen sharing may not work in some older browsers
+- Recording functionality requires browser support for MediaRecorder API

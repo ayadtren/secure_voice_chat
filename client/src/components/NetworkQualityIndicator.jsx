@@ -43,12 +43,12 @@ const NetworkQualityIndicator = ({ quality = 100, className }) => {
         className={cn(
           "w-1 rounded-sm mx-[1px] transition-colors duration-300",
           isFilled ? {
-            'bg-green-500': qualityLevel === 'excellent',
-            'bg-green-400': qualityLevel === 'good',
-            'bg-yellow-400': qualityLevel === 'fair',
-            'bg-orange-400': qualityLevel === 'poor',
-            'bg-red-500': qualityLevel === 'critical',
-          } : 'bg-gray-300 dark:bg-gray-700'
+            'bg-[#4ADE80]': qualityLevel === 'excellent',
+            'bg-[#4A72F5]': qualityLevel === 'good',
+            'bg-[#F59E0B]': qualityLevel === 'fair',
+            'bg-[#FB923C]': qualityLevel === 'poor',
+            'bg-[#D15052]': qualityLevel === 'critical',
+          } : 'bg-gray-600'
         )}
         style={{ height: barHeight }}
       />
@@ -56,7 +56,7 @@ const NetworkQualityIndicator = ({ quality = 100, className }) => {
   });
   
   return (
-    <div className={cn("flex items-end h-4", className)} title={`Network Quality: ${quality}%`}>
+    <div className={cn("flex items-end h-4 p-1 rounded-md bg-gray-800/50", className)} title={`Network Quality: ${quality}%`}>
       {bars}
     </div>
   );

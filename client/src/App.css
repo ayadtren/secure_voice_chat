@@ -132,8 +132,16 @@ body {
   border: 1px solid var(--border-color);
   border-radius: 4px;
   font-size: 1rem;
-  background-color: var(--background-color);
+  background-color: white;
   color: var(--text-color);
+  width: 100%;
+  outline: none;
+  transition: border-color 0.3s, box-shadow 0.3s;
+}
+
+.login-form input:focus {
+  border-color: var(--primary-color);
+  box-shadow: 0 0 0 2px rgba(74, 114, 245, 0.25);
 }
 
 .login-form button {

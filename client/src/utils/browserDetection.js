@@ -100,6 +100,53 @@ export const getMicrophonePermissionInstructions = () => {
 };
 
 /**
+ * Get browser-specific instructions for camera permissions
+ * @returns {Object} Instructions for the current browser
+ */
+export const getCameraPermissionInstructions = () => {
+  const browser = detectBrowser();
+  
+  // Default instructions
+  let instructions = "Please allow camera access in your browser settings and reload the page.";
+  
+  // Chrome/Chromium-based browsers
+  if (browser.name === "Chrome" || browser.name === "Edge" || browser.name === "Opera") {
+    if (browser.isMobile) {
+      if (browser.isAndroid) {
+        instructions = "Tap the lock icon in the address bar, then tap 'Site settings' and allow camera access. Reload the page after changing permissions.";
+      } else if (browser.isIOS) {
+        instructions = "iOS Chrome requires camera permissions to be granted in iOS Settings. Go to Settings > Chrome > Camera and enable access.";
+      }
+    } else {
+      instructions = "Click the lock/info icon in the address bar, select 'Site settings', and set Camera to 'Allow'. Reload the page after changing permissions.";
+    }
+  } 
+  // Firefox
+  else if (browser.name === "Firefox") {
+    if (browser.isMobile) {
+      instructions = "Tap the lock icon in the address bar, tap 'Edit Site Settings', and allow camera access. Reload the page after changing permissions.";
+    } else {
+      instructions = "Click the lock icon in the address bar, click the right arrow (>) next to Connection secure, select 'More Information', go to 'Permissions', and allow camera access. Reload the page after changing permissions.";
+    }
+  } 
+  // Safari
+  else if (browser.name === "Safari") {
+    if (browser.isMobile) {
+      instructions = "Go to iOS Settings > Safari > Camera and ensure it's enabled. Then reload this page.";
+    } else {
+      instructions = "Click Safari > Settings for This Website... (or Preferences > Websites > Camera) and allow camera access for this site. Reload the page after changing permissions.";
+    }
+  }
+  
+  return {
+    browser: browser.name,
+    version: browser.version,
+    isMobile: browser.isMobile,
+    instructions
+  };
+};
+
+/**
  * Create a detailed microphone status object with browser-specific guidance
  * @param {string} status - The status of microphone access ('denied', 'requesting', etc.)
  * @param {string} errorMessage - Optional error message from getUserMedia
@@ -147,8 +194,58 @@ export const createMicrophoneStatus = (status, errorMessage = null) => {
   };
 };
 
+/**
+ * Create a detailed camera status object with browser-specific guidance
+ * @param {string} status - The status of camera access ('denied', 'requesting', etc.)
+ * @param {string} errorMessage - Optional error message from getUserMedia
+ * @returns {Object} Detailed status object with browser-specific instructions
+ */
+export const createCameraStatus = (status, errorMessage = null) => {
+  const permissionInfo = getCameraPermissionInstructions();
+  
+  let message = '';
+  let instructions = '';
+  
+  switch (status) {
+    case 'requesting':
+      message = 'Requesting Camera Access';
+      instructions = 'Please allow camera access when prompted by your browser.';
+      break;
+    case 'denied':
+      message = 'Camera Access Denied';
+      instructions = permissionInfo.instructions;
+      break;
+    case 'unavailable':
+      message = 'Camera Unavailable';
+      instructions = 'No camera detected or your camera is being used by another application.';
+      break;
+    case 'error':
+      message = 'Camera Error';
+      instructions = errorMessage || 'An error occurred while accessing your camera.';
+      break;
+    case 'granted':
+      message = 'Camera Access Granted';
+      instructions = 'Your camera is now connected and working.';
+      break;
+    default:
+      message = 'Camera Status Unknown';
+      instructions = 'Please ensure your browser has camera access.';
+  }
+  
+  return {
+    status,
+    message,
+    instructions,
+    browser: permissionInfo.browser,
+    isMobile: permissionInfo.isMobile,
+    errorDetails: errorMessage
+  };
+};
+
 export default {
   detectBrowser,
   getMicrophonePermissionInstructions,
-  createMicrophoneStatus
+  getCameraPermissionInstructions,
+  createMicrophoneStatus,
+  createCameraStatus
 };

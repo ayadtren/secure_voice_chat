@@ -58,6 +58,7 @@ const Login = ({ onLogin, connected = false }) => {
           aria-label="Username"
           value={username}
           onChange={(e) => setUsername(e.target.value)}
+          className="w-full p-3 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-[#4A72F5] bg-white text-gray-900"
         />
         
         <Button 
